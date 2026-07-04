@@ -115,6 +115,7 @@ app.post("/api/messages", async (req, res) => {
     }
     res.status(upstream.status).type("application/json").send(text);
   } catch (err) {
+    console.error("[upstream fetch failed]", err.message, "| cause:", err.cause);
     res.status(502).json({ error: err.message || "Upstream request failed" });
   }
 });
