@@ -1,15 +1,9 @@
-import React, { useState, useRef, useMemo, useEffect } from "react";
+import React, { useState, useRef, useMemo } from "react";
 
 // ── Fathom ────────────────────────────────────────────────────────────
-// A value-investing lens that pulls live fundamentals from the user's
-// Robinhood connection, then evaluates any US-listed ticker against the
+// A value-investing lens that pulls live fundamentals from Financial
+// Modeling Prep, then evaluates any US-listed ticker against the
 // framework distilled from Warren Buffett's Berkshire shareholder letters.
-
-const ROBINHOOD_MCP = {
-  type: "url",
-  url: "https://agent.robinhood.com/mcp/trading",
-  name: "Robinhood",
-};
 
 const STYLES = `
 @import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
@@ -225,7 +219,7 @@ function fmt(v, kind) {
   return String(v);
 }
 
-async function callClaude(system, userText, { mcp = false, model = "claude-haiku-4-5", webSearch = true } = {}) {
+async function callClaude(system, userText, { model = "claude-haiku-4-5", webSearch = true } = {}) {
   const body = {
     model,
     max_tokens: 4096,
@@ -242,8 +236,6 @@ async function callClaude(system, userText, { mcp = false, model = "claude-haiku
     if (model === "claude-haiku-4-5") webSearchTool.allowed_callers = ["direct"];
     body.tools = [webSearchTool];
   }
-
-  if (mcp) body.mcp_servers = [ROBINHOOD_MCP];
 
   // Proxied through the local dev server (server/index.js), which holds the
   // real Anthropic API key — the browser never sees it.
@@ -375,8 +367,6 @@ function defaultBasis(bases) {
   return "1";
 }
 
-const GATHER_SYS = `You are a financial-data retrieval assistant. For the given US-listed ticker, use the Robinhood tools (get_equity_fundamentals, get_equity_quotes) to fetch current figures. If a Robinhood tool is unavailable or empty, use web_search. Return ONLY a minified JSON object — no prose, no markdown fences — with keys: name, price (number), currency, marketCap (number, total USD), pe (number), pb (number), roe (percent number), netMargin (percent number), operatingMargin (percent number), debtToEquity (number), dividendYield (percent number), sector, businessLine (one plain sentence on what the company sells), freeCashFlow (trailing-twelve-month total free cash flow in USD, i.e. operating cash flow minus capital expenditures — a signed number that may be negative), netIncome (TTM total USD, fallback if FCF unknown), revenueCagr5y (percent number, ~5-year revenue CAGR if findable), fcfHistory (array of the last up to 5 completed fiscal years of annual free cash flow in USD, ordered most-recent-first; each a signed number that may be negative; use [] if unavailable). Use null for anything you cannot verify. freeCashFlow and marketCap are the most important — search for them if the Robinhood tools omit them. Never invent values.`;
-
 const ANALYZE_SYS = `You apply Warren Buffett's documented investment framework — drawn from decades of Berkshire Hathaway shareholder letters — to judge a company as a long-term owner would. Use his real principles: stay inside a circle of competence; demand a durable economic moat (pricing power, low capital intensity, high returns on capital); insist on rational management and sound capital allocation; value owner earnings and consistent cash generation; require financial strength with modest debt; and buy only with a margin of safety against a conservative estimate of intrinsic value. Reason like an owner buying the whole business to hold for decades, not a trader.
 
 Write plainly and candidly, in the rational spirit of his letters — but DO NOT fabricate or attribute any direct quotations to Warren Buffett.
@@ -416,20 +406,9 @@ export default function App() {
   const [dcfG, setDcfG] = useState(0.03);   // terminal growth
   const [dcfN, setDcfN] = useState(10);     // high-growth horizon (years)
   const [fcfBasis, setFcfBasis] = useState("1"); // "1" | "3" | "5" owner-earnings window
-  const [robinhoodMcp, setRobinhoodMcp] = useState(false);
   const shownTicker = useRef("");
 
   const busy = stage === "gathering" || stage === "analyzing";
-
-  // Only request the Robinhood MCP connector if the server has a token
-  // configured for it — sending it unauthenticated makes Anthropic reject
-  // the whole request with a 400 rather than falling back to web_search.
-  useEffect(() => {
-    fetch("/api/capabilities")
-      .then((r) => r.json())
-      .then((c) => setRobinhoodMcp(!!c.robinhoodMcp))
-      .catch(() => setRobinhoodMcp(false));
-  }, []);
 
   async function run() {
     const t = ticker.trim().toUpperCase();
@@ -438,7 +417,11 @@ export default function App() {
     shownTicker.current = t;
     try {
       setStage("gathering");
-      const figs = await callClaudeJson(GATHER_SYS, `Ticker: ${t}`, { mcp: robinhoodMcp });
+      // Fundamentals come straight from Financial Modeling Prep — no LLM
+      // call needed for this step at all.
+      const figsRes = await fetch(`/api/fundamentals/${encodeURIComponent(t)}`);
+      if (!figsRes.ok) throw new Error(`Fundamentals API ${figsRes.status}`);
+      const figs = await figsRes.json();
       setFigures(figs);
 
       // owner-earnings basis options (1/3/5-yr) and deterministic baseline solve
@@ -515,7 +498,7 @@ export default function App() {
             {busy ? "Reading…" : "Appraise"}
           </button>
         </div>
-        <div className="bl-hint">Live figures via your Robinhood connection · long-term owner's view, not a trade signal</div>
+        <div className="bl-hint">Live figures via Financial Modeling Prep · long-term owner's view, not a trade signal</div>
 
         {stage === "gathering" && (
           <div className="bl-status"><span className="bl-dot" />Pulling the books on {shownTicker.current}…</div>

@@ -3,7 +3,7 @@ import express from "express";
 
 const PORT = process.env.PORT || 8787;
 const API_KEY = process.env.ANTHROPIC_API_KEY;
-const ROBINHOOD_MCP_TOKEN = process.env.ROBINHOOD_MCP_TOKEN;
+const FMP_API_KEY = process.env.FMP_API_KEY;
 
 if (!API_KEY) {
   console.error("Missing ANTHROPIC_API_KEY — set it in .env before starting the server.");
@@ -12,10 +12,6 @@ if (!API_KEY) {
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
-
-app.get("/api/capabilities", (req, res) => {
-  res.json({ robinhoodMcp: !!ROBINHOOD_MCP_TOKEN });
-});
 
 // Per-MTok pricing by model. Sonnet 5 is at its introductory rate through
 // 2026-08-31 (reverts to $3/$15 after).
@@ -82,27 +78,92 @@ app.get("/api/usage", (req, res) => {
   res.json(totals);
 });
 
+const FMP_BASE = "https://financialmodelingprep.com/stable";
+
+async function fmpGet(path, params) {
+  const url = new URL(`${FMP_BASE}/${path}`);
+  url.searchParams.set("apikey", FMP_API_KEY);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`FMP ${path} ${res.status}`);
+  return res.json();
+}
+
+const pct = (x) => (typeof x === "number" ? x * 100 : null);
+const num = (x) => (typeof x === "number" ? x : null);
+
+app.get("/api/fundamentals/:ticker", async (req, res) => {
+  if (!FMP_API_KEY) {
+    return res.status(500).json({ error: "FMP_API_KEY not configured — set it in .env" });
+  }
+  const symbol = req.params.ticker.toUpperCase();
+
+  try {
+    const [profileArr, ratiosArr, metricsArr, cashFlowArr, incomeArr] = await Promise.all([
+      fmpGet("profile", { symbol }),
+      fmpGet("ratios-ttm", { symbol }),
+      fmpGet("key-metrics-ttm", { symbol }),
+      fmpGet("cash-flow-statement", { symbol, period: "annual", limit: 5 }),
+      fmpGet("income-statement", { symbol, period: "annual", limit: 5 }),
+    ]);
+    const profile = profileArr?.[0] || {};
+    const ratios = ratiosArr?.[0] || {};
+    const metrics = metricsArr?.[0] || {};
+    const cashFlow = Array.isArray(cashFlowArr) ? cashFlowArr : [];
+    const income = Array.isArray(incomeArr) ? incomeArr : [];
+
+    if (!profile.companyName) {
+      return res.status(404).json({ error: `No FMP data for ticker "${symbol}"` });
+    }
+
+    // FMP returns most-recent-first; keep that ordering to match what the
+    // app's owner-earnings basis picker (1/3/5-yr) expects.
+    const fcfHistory = cashFlow.slice(0, 5).map((x) => num(x.freeCashFlow));
+    while (fcfHistory.length < 5) fcfHistory.push(null);
+
+    let revenueCagr5y = null;
+    if (income.length >= 2) {
+      const newest = income[0].revenue;
+      const oldest = income[income.length - 1].revenue;
+      const years = income.length - 1;
+      if (typeof newest === "number" && typeof oldest === "number" && oldest > 0) {
+        revenueCagr5y = (Math.pow(newest / oldest, 1 / years) - 1) * 100;
+      }
+    }
+
+    res.json({
+      name: profile.companyName ?? null,
+      price: num(profile.price),
+      currency: profile.currency ?? "USD",
+      marketCap: num(profile.marketCap),
+      pe: num(ratios.priceToEarningsRatioTTM),
+      pb: num(ratios.priceToBookRatioTTM),
+      roe: pct(metrics.returnOnEquityTTM),
+      netMargin: pct(ratios.netProfitMarginTTM),
+      operatingMargin: pct(ratios.operatingProfitMarginTTM),
+      debtToEquity: num(ratios.debtToEquityRatioTTM),
+      dividendYield: pct(ratios.dividendYieldTTM),
+      sector: profile.sector ?? null,
+      businessLine: profile.description ? profile.description.split(/(?<=[.!?])\s/)[0] : null,
+      freeCashFlow: fcfHistory[0],
+      netIncome: num(income[0]?.netIncome),
+      revenueCagr5y,
+      fcfHistory,
+    });
+  } catch (err) {
+    console.error("[fmp fundamentals failed]", err.message);
+    res.status(502).json({ error: err.message || "FMP request failed" });
+  }
+});
+
 app.post("/api/messages", async (req, res) => {
   const body = { ...req.body };
-
-  // Attach a Robinhood MCP auth token if the caller asked for the connector
-  // and one is configured. Without it, a hosted MCP server that requires
-  // OAuth will reject the connection.
-  if (Array.isArray(body.mcp_servers) && ROBINHOOD_MCP_TOKEN) {
-    body.mcp_servers = body.mcp_servers.map((s) => ({
-      ...s,
-      authorization_token: s.authorization_token || ROBINHOOD_MCP_TOKEN,
-    }));
-  }
 
   const headers = {
     "content-type": "application/json",
     "x-api-key": API_KEY,
     "anthropic-version": "2023-06-01",
   };
-  if (Array.isArray(body.mcp_servers) && body.mcp_servers.length) {
-    headers["anthropic-beta"] = "mcp-client-2025-04-04";
-  }
 
   try {
     const upstream = await fetch("https://api.anthropic.com/v1/messages", {
