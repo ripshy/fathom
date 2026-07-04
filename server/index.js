@@ -17,44 +17,47 @@ app.get("/api/capabilities", (req, res) => {
   res.json({ robinhoodMcp: !!ROBINHOOD_MCP_TOKEN });
 });
 
-// claude-sonnet-5 pricing per MTok, introductory rate active through 2026-08-31
-// (reverts to $3/$15 after). This proxy only ever calls that one model.
-const PRICE_PER_MTOK = { input: 2.0, output: 10.0 };
-const CACHE_WRITE_5M_PER_MTOK = PRICE_PER_MTOK.input * 1.25;
-const CACHE_WRITE_1H_PER_MTOK = PRICE_PER_MTOK.input * 2;
-const CACHE_READ_PER_MTOK = PRICE_PER_MTOK.input * 0.1;
+// Per-MTok pricing by model. Sonnet 5 is at its introductory rate through
+// 2026-08-31 (reverts to $3/$15 after).
+const PRICE_PER_MTOK_BY_MODEL = {
+  "claude-sonnet-5": { input: 2.0, output: 10.0 },
+  "claude-haiku-4-5": { input: 1.0, output: 5.0 },
+};
+const DEFAULT_PRICE = PRICE_PER_MTOK_BY_MODEL["claude-sonnet-5"];
 const WEB_SEARCH_PER_CALL = 0.01; // $10 / 1,000 searches
 
 const WARN_THRESHOLD_USD = Number(process.env.COST_WARN_THRESHOLD || 0.03);
 
 const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, webSearches: 0, requests: 0, costUsd: 0 };
 
-function estimateCostUsd(usage) {
+function estimateCostUsd(model, usage) {
+  const price = PRICE_PER_MTOK_BY_MODEL[model] || DEFAULT_PRICE;
+  const cacheWritePerMtok = price.input * 1.25; // assumes the default 5-min TTL — this app never sets cache_control
+  const cacheReadPerMtok = price.input * 0.1;
+
   const input = usage.input_tokens || 0;
   const output = usage.output_tokens || 0;
   const cacheRead = usage.cache_read_input_tokens || 0;
-  // The API doesn't report which TTL a cache write used; assume the default
-  // 5-minute TTL since this app never sets cache_control explicitly.
   const cacheWrite = usage.cache_creation_input_tokens || 0;
   const webSearches = (usage.server_tool_use && usage.server_tool_use.web_search_requests) || 0;
 
   return (
-    (input / 1e6) * PRICE_PER_MTOK.input +
-    (output / 1e6) * PRICE_PER_MTOK.output +
-    (cacheRead / 1e6) * CACHE_READ_PER_MTOK +
-    (cacheWrite / 1e6) * CACHE_WRITE_5M_PER_MTOK +
+    (input / 1e6) * price.input +
+    (output / 1e6) * price.output +
+    (cacheRead / 1e6) * cacheReadPerMtok +
+    (cacheWrite / 1e6) * cacheWritePerMtok +
     webSearches * WEB_SEARCH_PER_CALL
   );
 }
 
-function logUsage(usage) {
+function logUsage(model, usage) {
   if (!usage) return;
   const input = usage.input_tokens || 0;
   const output = usage.output_tokens || 0;
   const cacheRead = usage.cache_read_input_tokens || 0;
   const cacheWrite = usage.cache_creation_input_tokens || 0;
   const webSearches = (usage.server_tool_use && usage.server_tool_use.web_search_requests) || 0;
-  const costUsd = estimateCostUsd(usage);
+  const costUsd = estimateCostUsd(model, usage);
 
   totals.input += input;
   totals.output += output;
@@ -65,7 +68,7 @@ function logUsage(usage) {
   totals.costUsd += costUsd;
 
   console.log(
-    `[usage] req#${totals.requests} in=${input} out=${output} cacheRead=${cacheRead} cacheWrite=${cacheWrite}` +
+    `[usage] req#${totals.requests} model=${model} in=${input} out=${output} cacheRead=${cacheRead} cacheWrite=${cacheWrite}` +
       ` webSearches=${webSearches} cost=$${costUsd.toFixed(4)}` +
       ` | session totals: cost=$${totals.costUsd.toFixed(4)} in=${totals.input} out=${totals.output}`
   );
@@ -109,7 +112,7 @@ app.post("/api/messages", async (req, res) => {
     });
     const text = await upstream.text();
     try {
-      logUsage(JSON.parse(text).usage);
+      logUsage(body.model, JSON.parse(text).usage);
     } catch {
       // non-JSON or error body — nothing to log
     }

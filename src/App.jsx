@@ -224,15 +224,24 @@ function fmt(v, kind) {
   return String(v);
 }
 
-async function callClaude(system, userText, { mcp = false } = {}) {
+async function callClaude(system, userText, { mcp = false, model = "claude-haiku-4-5", webSearch = true } = {}) {
   const body = {
-    model: "claude-sonnet-5",
+    model,
     max_tokens: 4096,
     thinking: { type: "disabled" },
     system,
     messages: [{ role: "user", content: userText }],
-    tools: [{ type: "web_search_20250305", name: "web_search" }],
   };
+
+  if (webSearch) {
+    const webSearchTool = { type: "web_search_20260209", name: "web_search", max_uses: 4 };
+    // Dynamic filtering runs search through code execution by default, which
+    // needs programmatic-tool-calling support Haiku 4.5 doesn't have — fall
+    // back to direct calls there (Sonnet 5 keeps the filtered, cheaper path).
+    if (model === "claude-haiku-4-5") webSearchTool.allowed_callers = ["direct"];
+    body.tools = [webSearchTool];
+  }
+
   if (mcp) body.mcp_servers = [ROBINHOOD_MCP];
 
   // Proxied through the local dev server (server/index.js), which holds the
@@ -445,9 +454,12 @@ export default function App() {
         : `IMPLIED_GROWTH: not computable from ${basisWord} owner earnings — the company is not free-cash-flow positive on this basis, so its price rests on future profitability rather than present owner earnings.`;
 
       setStage("analyzing");
+      // No web_search here — analysis reasons over the figures already
+      // gathered, it shouldn't be spending on live searches of its own.
       const rep = await callClaudeJson(
         ANALYZE_SYS,
-        `Company data (JSON):\n${JSON.stringify(figs)}\n\n${impliedTxt}`
+        `Company data (JSON):\n${JSON.stringify(figs)}\n\n${impliedTxt}`,
+        { webSearch: false }
       );
       setReport(rep);
       setStage("done");
