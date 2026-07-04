@@ -250,12 +250,47 @@ async function callClaude(system, userText, { mcp = false } = {}) {
     .join("\n");
 }
 
+// The model sometimes emits raw newlines/tabs inside a JSON string value
+// (e.g. a multi-sentence note) instead of escaping them, which is invalid
+// JSON. Escape control characters that appear inside string literals —
+// but not the ones used as structural whitespace between tokens — before
+// handing the text to JSON.parse.
+function sanitizeJsonControlChars(raw) {
+  const escapes = { "\n": "\\n", "\r": "\\r", "\t": "\\t" };
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (const ch of raw) {
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && inString) {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      out += ch;
+      continue;
+    }
+    if (inString && Object.prototype.hasOwnProperty.call(escapes, ch)) {
+      out += escapes[ch];
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
 function extractJson(text) {
   const clean = text.replace(/```json|```/g, "").trim();
   const start = clean.indexOf("{");
   const end = clean.lastIndexOf("}");
   if (start === -1 || end === -1) throw new Error("No JSON in model reply");
-  return JSON.parse(clean.slice(start, end + 1));
+  return JSON.parse(sanitizeJsonControlChars(clean.slice(start, end + 1)));
 }
 
 // ── Reverse DCF ─────────────────────────────────────────────────────────
@@ -349,6 +384,18 @@ Given the company data (some fields may be null — reason conservatively and no
 - verdictLabel: exactly one of "Wonderful business, fair price", "Good business, rich price", "Fair business, fair price", "Requires patience", "Outside the circle", "Pass for now"
 - verdictLetter: a 3-5 sentence assessment addressed to a fellow shareholder, weighing moat, management, and price, ending with the disposition. No fabricated quotes, no markdown.`;
 
+// The model occasionally emits malformed JSON (a stray unquoted token, an
+// unbalanced array) even when instructed to reply with JSON only. Retrying
+// once resolves this most of the time, since it's a sampling fluke rather
+// than a systematic prompt problem.
+async function callClaudeJson(system, userText, opts) {
+  try {
+    return extractJson(await callClaude(system, userText, opts));
+  } catch (e) {
+    return extractJson(await callClaude(system, userText, opts));
+  }
+}
+
 export default function App() {
   const [ticker, setTicker] = useState("");
   const [stage, setStage] = useState("idle"); // idle | gathering | analyzing | done | error
@@ -381,8 +428,7 @@ export default function App() {
     shownTicker.current = t;
     try {
       setStage("gathering");
-      const gatherRaw = await callClaude(GATHER_SYS, `Ticker: ${t}`, { mcp: robinhoodMcp });
-      const figs = extractJson(gatherRaw);
+      const figs = await callClaudeJson(GATHER_SYS, `Ticker: ${t}`, { mcp: robinhoodMcp });
       setFigures(figs);
 
       // owner-earnings basis options (1/3/5-yr) and deterministic baseline solve
@@ -399,11 +445,10 @@ export default function App() {
         : `IMPLIED_GROWTH: not computable from ${basisWord} owner earnings — the company is not free-cash-flow positive on this basis, so its price rests on future profitability rather than present owner earnings.`;
 
       setStage("analyzing");
-      const analyzeRaw = await callClaude(
+      const rep = await callClaudeJson(
         ANALYZE_SYS,
         `Company data (JSON):\n${JSON.stringify(figs)}\n\n${impliedTxt}`
       );
-      const rep = extractJson(analyzeRaw);
       setReport(rep);
       setStage("done");
     } catch (e) {
