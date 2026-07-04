@@ -1,6 +1,6 @@
 import React, { useState, useRef, useMemo, useEffect } from "react";
 
-// ── Through Buffett's Eyes ──────────────────────────────────────────────
+// ── Fathom ────────────────────────────────────────────────────────────
 // A value-investing lens that pulls live fundamentals from the user's
 // Robinhood connection, then evaluates any US-listed ticker against the
 // framework distilled from Warren Buffett's Berkshire shareholder letters.
@@ -25,13 +25,14 @@ const STYLES = `
   --rule:#C7CDBB;
 }
 *{box-sizing:border-box}
+html,body{margin:0;padding:0;min-height:100%}
 .bl-root{
   background:
     repeating-linear-gradient(to bottom, transparent 0 30px, rgba(44,106,91,.05) 30px 31px),
     var(--paper);
   color:var(--ink);
   font-family:'Newsreader',Georgia,serif;
-  min-height:100%;
+  min-height:100vh;
   padding:clamp(18px,4vw,52px);
 }
 .bl-wrap{max-width:760px;margin:0 auto}
@@ -492,7 +493,7 @@ export default function App() {
 
         <header className="bl-masthead">
           <div className="bl-eyebrow">A Letter to the Shareholder · Est. principles, 1965–today</div>
-          <h1 className="bl-title">Through <em>Buffett's</em> Eyes</h1>
+          <h1 className="bl-title">Fathom through <em>Buffett's</em> eyes</h1>
           <p className="bl-sub">
             Enter a ticker. It is read as an owner would read it — for the moat, the
             people running it, the cash it throws off, and the price you must pay.
