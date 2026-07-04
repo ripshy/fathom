@@ -13,6 +13,10 @@ if (!API_KEY) {
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
+app.get("/api/capabilities", (req, res) => {
+  res.json({ robinhoodMcp: !!ROBINHOOD_MCP_TOKEN });
+});
+
 app.post("/api/messages", async (req, res) => {
   const body = { ...req.body };
 

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from "react";
+import React, { useState, useRef, useMemo, useEffect } from "react";
 
 // ── Through Buffett's Eyes ──────────────────────────────────────────────
 // A value-investing lens that pulls live fundamentals from the user's
@@ -227,7 +227,8 @@ function fmt(v, kind) {
 async function callClaude(system, userText, { mcp = false } = {}) {
   const body = {
     model: "claude-sonnet-5",
-    max_tokens: 1000,
+    max_tokens: 4096,
+    thinking: { type: "disabled" },
     system,
     messages: [{ role: "user", content: userText }],
     tools: [{ type: "web_search_20250305", name: "web_search" }],
@@ -358,9 +359,20 @@ export default function App() {
   const [dcfG, setDcfG] = useState(0.03);   // terminal growth
   const [dcfN, setDcfN] = useState(10);     // high-growth horizon (years)
   const [fcfBasis, setFcfBasis] = useState("1"); // "1" | "3" | "5" owner-earnings window
+  const [robinhoodMcp, setRobinhoodMcp] = useState(false);
   const shownTicker = useRef("");
 
   const busy = stage === "gathering" || stage === "analyzing";
+
+  // Only request the Robinhood MCP connector if the server has a token
+  // configured for it — sending it unauthenticated makes Anthropic reject
+  // the whole request with a 400 rather than falling back to web_search.
+  useEffect(() => {
+    fetch("/api/capabilities")
+      .then((r) => r.json())
+      .then((c) => setRobinhoodMcp(!!c.robinhoodMcp))
+      .catch(() => setRobinhoodMcp(false));
+  }, []);
 
   async function run() {
     const t = ticker.trim().toUpperCase();
@@ -369,7 +381,7 @@ export default function App() {
     shownTicker.current = t;
     try {
       setStage("gathering");
-      const gatherRaw = await callClaude(GATHER_SYS, `Ticker: ${t}`, { mcp: true });
+      const gatherRaw = await callClaude(GATHER_SYS, `Ticker: ${t}`, { mcp: robinhoodMcp });
       const figs = extractJson(gatherRaw);
       setFigures(figs);
 
